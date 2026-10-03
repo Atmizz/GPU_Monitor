@@ -1,0 +1,632 @@
+/* ===== 全局 ===== */
+html,
+body {
+    min-height: 100%;
+    background-color: #212529 !important;
+    overflow-x: hidden;
+}
+
+/* ===== GPU 卡片 ===== */
+#gpu-cards-container {
+    min-height: 0;
+    margin-bottom: 1.5rem;
+}
+
+/* ===== 服务器分组区块 ===== */
+.server-section {
+    width: 100%;
+    margin-bottom: 0.75rem;
+}
+
+.server-section-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.75rem;
+    margin-bottom: 0.6rem;
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 0.5rem;
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 0.2s ease;
+}
+
+.server-section-header:hover {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+.server-section-header .section-chevron {
+    color: #6c757d;
+    font-size: 0.8rem;
+    flex-shrink: 0;
+    transition: transform 0.2s ease;
+}
+
+.server-section.collapsed .section-chevron {
+    transform: rotate(-90deg);
+}
+
+.server-section-header .section-server-icon {
+    color: #20c997;
+    font-size: 0.85rem;
+    flex-shrink: 0;
+}
+
+.server-section-header .section-title {
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: #f8f9fa;
+    min-width: 0;
+}
+
+.server-section-header .section-gpu-count {
+    font-size: 0.7rem;
+    flex-shrink: 0;
+}
+
+.server-section.collapsed .server-section-body {
+    display: none !important;
+}
+
+.gpu-card-val {
+    font-variant-numeric: tabular-nums;
+}
+
+.card-footer .col-3 {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.progress-subtle {
+    height: 6px;
+    background-color: rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+    margin-top: 4px;
+}
+
+/* ===== 卡片占用者行 ===== */
+.gpu-occupants {
+    min-width: 0;
+}
+
+/* 空闲标志：实心绿胶囊 + 呼吸辉光，保证在任何卡片底色上都醒目 */
+.gpu-occupants-free {
+    background-color: #20c997;
+    color: #06301f;
+    font-weight: 700;
+    padding: 0.05rem 0.5rem;
+    border-radius: 999px;
+    animation: freeGlowPulse 2s ease-in-out infinite;
+}
+
+.section-free-pill {
+    background-color: #20c997;
+    color: #06301f;
+    font-weight: 700;
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    margin-left: 0.15rem;
+    animation: freeGlowPulse 2s ease-in-out infinite;
+}
+
+.section-free-zero {
+    color: rgba(255, 255, 255, 0.55);
+}
+
+@keyframes freeGlowPulse {
+    0%, 100% { box-shadow: 0 0 3px rgba(32, 201, 151, 0.5); }
+    50% { box-shadow: 0 0 11px rgba(32, 201, 151, 0.95); }
+}
+
+/* ===== All Nodes and GPUs 表格折叠 ===== */
+#nodes-table-card .card-header {
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 0.2s ease;
+}
+
+#nodes-table-card .card-header:hover {
+    background-color: rgba(0, 0, 0, 0.04);
+}
+
+#nodes-table-card .table-chevron {
+    color: #6c757d;
+    font-size: 0.8rem;
+    transition: transform 0.2s ease;
+}
+
+#nodes-table-card.collapsed .table-chevron {
+    transform: rotate(-90deg);
+}
+
+#nodes-table-card.collapsed .card-body {
+    display: none !important;
+}
+
+.fade-in-card {
+    animation: none !important;
+}
+
+/* ===== 拖拽 ===== */
+.cursor-move {
+    cursor: grab;
+    color: #6c757d;
+}
+
+.cursor-move:active {
+    cursor: grabbing;
+}
+
+.cursor-move:hover {
+    color: #198754;
+}
+
+.sortable-ghost {
+    opacity: 0.4;
+    background-color: #e9ecef;
+}
+
+/* ===== 设置按钮 ===== */
+.btn-icon-only {
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    transition: all 0.2s ease;
+}
+
+.btn-icon-only:hover {
+    background-color: rgba(255, 255, 255, 0.12);
+    transform: rotate(90deg);
+}
+
+/* =========================================================
+           右侧服务器快捷栏
+   ========================================================= */
+.server-shortcuts {
+    position: absolute;
+    top: 76px;
+    width: 180px;
+    max-height: calc(100vh - 96px);
+    overflow-y: auto;
+    z-index: 1020;
+    box-sizing: border-box;
+    background: #1b1f22;
+    border: 1px solid #343a40;
+    border-radius: 10px;
+    padding: 9px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.30), 0 2px 6px rgba(0, 0, 0, 0.20);
+    backdrop-filter: blur(8px);
+    transition: right 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
+}
+
+.server-shortcuts.overlap-hidden {
+    display: none !important;
+}
+
+.server-shortcuts-title {
+    color: #adb5bd;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 5px 6px 8px;
+    border-bottom: 1px solid #343a40;
+    margin-bottom: 8px;
+    letter-spacing: 0.2px;
+}
+
+.server-shortcuts-title i {
+    color: #6c757d;
+}
+
+.server-shortcut-btn {
+    width: 100%;
+    margin-bottom: 5px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 8px;
+    color: #ced4da;
+    background: #252a2e;
+    border: 1px solid #343a40;
+    border-radius: 7px;
+    font-size: 12px;
+    text-align: left;
+    transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
+}
+
+.server-shortcut-btn:last-child {
+    margin-bottom: 0;
+}
+
+.server-shortcut-btn:hover {
+    color: #fff;
+    background: #2d3338;
+    border-color: #495057;
+    transform: translateX(1px);
+}
+
+.server-shortcut-btn[data-hostname] {
+    cursor: grab;
+}
+
+.server-shortcut-btn[data-hostname]:active {
+    cursor: grabbing;
+}
+
+.server-shortcut-btn.active {
+    color: #fff;
+    background: #198754;
+    border-color: #198754;
+    box-shadow: 0 2px 8px rgba(25, 135, 84, 0.28);
+}
+
+.server-shortcut-btn.active:hover {
+    background: #157347;
+    border-color: #157347;
+}
+
+.server-shortcut-btn i {
+    width: 14px;
+    min-width: 14px;
+    flex-shrink: 0;
+    text-align: center;
+    color: #868e96;
+}
+
+.server-shortcut-btn.active i {
+    color: #fff;
+}
+
+.server-shortcut-name {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
+}
+
+/* ===== 状态圆点 ===== */
+.server-status-dot {
+    width: 7px;
+    height: 7px;
+    min-width: 7px;
+    min-height: 7px;
+    border-radius: 50%;
+    display: inline-block;
+    background: #6c757d;
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.04);
+    transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.server-status-dot.online {
+    background: #20c997;
+    box-shadow: 0 0 0 2px rgba(32, 201, 151, 0.10), 0 0 6px rgba(32, 201, 151, 0.55);
+}
+
+.server-status-dot.offline {
+    background: #dc3545;
+    box-shadow: 0 0 0 2px rgba(220, 53, 69, 0.10), 0 0 6px rgba(220, 53, 69, 0.45);
+}
+
+.server-status-dot.unknown {
+    background: #6c757d;
+}
+
+.server-status-dot.all-status {
+    background: #20c997;
+    box-shadow: 0 0 0 2px rgba(32, 201, 151, 0.10), 0 0 6px rgba(32, 201, 151, 0.45);
+}
+
+.server-shortcuts-empty {
+    color: #6c757d;
+    font-size: 12px;
+    text-align: center;
+    padding: 10px 5px;
+}
+
+.server-shortcuts::-webkit-scrollbar {
+    width: 4px;
+}
+
+.server-shortcuts::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.server-shortcuts::-webkit-scrollbar-thumb {
+    background: #495057;
+    border-radius: 4px;
+}
+
+.server-shortcuts::-webkit-scrollbar-thumb:hover {
+    background: #6c757d;
+}
+
+/* =========================================================
+           左侧用户及型号快捷栏
+   ========================================================= */
+.user-gpu-shortcuts {
+    position: absolute;
+    top: 76px;
+    width: 180px;
+    max-height: calc(100vh - 96px);
+    overflow-y: auto;
+    z-index: 1020;
+    box-sizing: border-box;
+    background: #1b1f22;
+    border: 1px solid #343a40;
+    border-radius: 10px;
+    padding: 9px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.30), 0 2px 6px rgba(0, 0, 0, 0.20);
+    backdrop-filter: blur(8px);
+    transition: left 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
+}
+
+.user-gpu-shortcuts.overlap-hidden {
+    display: none !important;
+}
+
+.user-gpu-shortcuts-title {
+    color: #adb5bd;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 5px 6px 8px;
+    border-bottom: 1px solid #343a40;
+    margin-bottom: 8px;
+    letter-spacing: 0.2px;
+}
+
+.user-gpu-shortcuts-title i {
+    color: #6c757d;
+}
+
+.user-free-gpu-card {
+    width: 100%;
+    display: block;
+    padding: 10px 12px;
+    margin-bottom: 7px;
+    color: #ced4da;
+    background: #252a2e;
+    border: 1px solid #343a40;
+    border-radius: 9px;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+    user-select: none;
+    appearance: none;
+    box-sizing: border-box;
+    transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.user-free-gpu-card:hover {
+    color: #fff;
+    background: #2d3338;
+    border-color: #495057;
+}
+
+.user-free-gpu-card.active {
+    color: #fff;
+    background: #198754;
+    border-color: #198754;
+    box-shadow: 0 2px 8px rgba(25, 135, 84, 0.28);
+}
+
+.user-free-gpu-card.active:hover {
+    background: #157347;
+    border-color: #157347;
+}
+
+.user-free-gpu-left {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+}
+
+.user-free-gpu-left i {
+    width: 14px;
+    min-width: 14px;
+    text-align: center;
+    color: #20c997;
+}
+
+.user-free-gpu-card.active .user-free-gpu-left i {
+    color: #fff;
+}
+
+.user-free-gpu-label {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-weight: 600;
+}
+
+.user-free-gpu-count {
+    font-size: 18px;
+    line-height: 1.1;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.user-free-gpu-percent {
+    font-size: 12px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.user-free-gpu-progress {
+    height: 5px;
+    margin-top: 6px;
+    background: rgba(255, 255, 255, 0.10);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.user-free-gpu-progress-bar {
+    height: 100%;
+    width: 0;
+    border-radius: 3px;
+    background: #20c997;
+    transition: width 0.25s ease;
+}
+
+.user-shortcut-btn {
+    width: 100%;
+    margin-bottom: 5px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 7px;
+    padding: 7px 8px;
+    color: #ced4da;
+    background: #252a2e;
+    border: 1px solid #343a40;
+    border-radius: 7px;
+    font-size: 12px;
+    text-align: left;
+    font-weight: 600;
+    transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.user-shortcut-btn:last-child {
+    margin-bottom: 0;
+}
+
+.user-shortcut-btn:hover {
+    color: #fff;
+    background: #2d3338;
+    border-color: #495057;
+}
+
+.user-shortcut-btn.active {
+    color: #fff;
+    background: #198754;
+    border-color: #198754;
+    box-shadow: 0 2px 8px rgba(25, 135, 84, 0.28);
+}
+
+.user-shortcut-btn.active:hover {
+    background: #157347;
+    border-color: #157347;
+}
+
+/* ===== 无空余状态的样式 (去除 hover 和点击按下的反馈) ===== */
+.user-free-gpu-card.empty-btn,
+.user-shortcut-btn.empty-btn {
+    cursor: default !important;
+}
+
+.user-free-gpu-card.empty-btn:hover,
+.user-shortcut-btn.empty-btn:hover,
+.user-free-gpu-card.empty-btn:active,
+.user-shortcut-btn.empty-btn:active,
+.user-free-gpu-card.empty-btn:focus,
+.user-shortcut-btn.empty-btn:focus {
+    background: #252a2e !important; 
+    border-color: #343a40 !important;
+    color: #ced4da !important;
+    box-shadow: none !important;
+    transform: none !important;
+    outline: none !important;
+}
+
+.user-shortcut-left {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+}
+
+.user-shortcut-name {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.user-gpu-count {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: #adb5bd;
+    white-space: nowrap;
+}
+
+/* 选中状态下，所有的文字内容（包括空闲和总计的文字）都变成白色 */
+.user-shortcut-btn.active .user-gpu-count,
+.user-shortcut-btn.active .user-gpu-count span {
+    color: #fff !important;
+    opacity: 1 !important;
+}
+
+.user-gpu-shortcuts-empty {
+    color: #6c757d;
+    font-size: 12px;
+    text-align: center;
+    padding: 10px 5px;
+}
+
+.user-gpu-shortcuts::-webkit-scrollbar {
+    width: 4px;
+}
+
+.user-gpu-shortcuts::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.user-gpu-shortcuts::-webkit-scrollbar-thumb {
+    background: #495057;
+    border-radius: 4px;
+}
+
+.user-gpu-shortcuts::-webkit-scrollbar-thumb:hover {
+    background: #6c757d;
+}
+
+/* ===== 移动端自适应优化 ===== */
+@media (max-width: 899.98px) {
+    .server-shortcuts,
+    .user-gpu-shortcuts {
+        display: none !important;
+    }
+}
+
+@media (min-width: 400px) and (max-width: 575.98px) {
+    .col-xs-6 { flex: 0 0 auto; width: 50%; }
+}
+
+@media (max-width: 575.98px) {
+    #gpu-cards-container .card-body { padding: 0.75rem; }
+    #gpu-cards-container .card-footer .row { font-size: 0.75rem; }
+    #gpu-cards-container .gpu-name { font-size: 0.85rem; }
+}
+
+/* ===== DataTable ===== */
+.table {
+    margin-bottom: 0;
+}
+
+/* ===== Footer ===== */
+footer a {
+    transition: color 0.2s ease;
+}
+
+footer a:hover {
+    color: #20c997 !important;
+}
+
+/* ===== 卡片高亮联动效果 ===== */
+.gpu-card-highlight > .card {
+    border-color: #0088ff !important;
+    box-shadow: 0 0 0 2px #0088ff,
+                0 0 12px rgba(0, 136, 255, 0.9),
+                0 0 25px rgba(0, 136, 255, 0.5) !important;
+    transform: translateY(-4px);
+    z-index: 10;
+}
+
+#gpu-cards-container .card {
+    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, opacity 0.2s ease;
+}

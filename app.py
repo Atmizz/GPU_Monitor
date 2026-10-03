@@ -17,6 +17,12 @@ SECRETS_FILE = 'secrets.json'
 # 持久化时需要剥离到 secrets.json 的敏感字段,servers.json 中不应出现
 SENSITIVE_KEYS = ('hostname', 'port', 'username', 'password')
 
+# 采集节奏自适应:有人看面板时全速轮询,无人看时降频,减少对节点的 SSH 压力
+POLL_INTERVAL_ACTIVE = 1.0   # 有客户端在线时的采集间隔(秒)
+POLL_INTERVAL_IDLE = 30.0    # 无客户端在线时的休眠采集间隔(秒)
+CLIENT_ACTIVE_WINDOW = 10.0  # 距上次客户端拉取数据在该窗口内视为「有人在看」
+CACHE_STALE_SECONDS = 2.0    # 缓存超过该秒数视为过期,客户端请求会唤醒采集线程立即刷新
+
 SERVERS = []
 SERVERS_LOCK = threading.Lock()
 
@@ -25,6 +31,9 @@ SSH_LOCK = threading.Lock()
 
 GLOBAL_GPU_STATS = []
 CACHE_LOCK = threading.Lock()
+CACHE_UPDATED_AT = 0.0          # 缓存最近一次更新时间(判断缓存是否过期)
+LAST_CLIENT_REQUEST = 0.0       # 最近一次客户端拉取数据的时间(判断是否有人在看)
+WAKE_EVENT = threading.Event()  # 空闲降频期间客户端请求到达时唤醒采集线程
 
 
 # ================= 持久化存储逻辑 =================
@@ -272,29 +281,32 @@ def fetch_single_server_data(host_details):
 
 
 def background_monitor_loop():
-    global GLOBAL_GPU_STATS
+    global GLOBAL_GPU_STATS, CACHE_UPDATED_AT
     while True:
         start_time = time.time()
         with SERVERS_LOCK:
             current_servers = list(SERVERS)
-        if not current_servers:
-            with CACHE_LOCK:
-                GLOBAL_GPU_STATS = []
-            time.sleep(1)
-            continue
 
-        max_threads = min(10, len(current_servers))
-        if max_threads > 0:
+        if current_servers:
+            max_threads = min(10, len(current_servers))
             with ThreadPoolExecutor(max_workers=max_threads) as executor:
                 results = list(executor.map(fetch_single_server_data, current_servers))
+            with CACHE_LOCK:
+                GLOBAL_GPU_STATS = results
+                CACHE_UPDATED_AT = time.time()
         else:
-            results = []
-        with CACHE_LOCK:
-            GLOBAL_GPU_STATS = results
+            with CACHE_LOCK:
+                GLOBAL_GPU_STATS = []
 
+        # 近期有客户端拉取数据就全速轮询,否则降频休眠;
+        # WAKE_EVENT 让空闲期的客户端请求能立即唤醒采集
         elapsed = time.time() - start_time
-        sleep_time = max(0.5, 1.0 - elapsed)
-        time.sleep(sleep_time)
+        if time.time() - LAST_CLIENT_REQUEST < CLIENT_ACTIVE_WINDOW:
+            interval = POLL_INTERVAL_ACTIVE
+        else:
+            interval = POLL_INTERVAL_IDLE
+        WAKE_EVENT.wait(max(0.0, interval - elapsed))
+        WAKE_EVENT.clear()
 
 
 # ================= Flask 路由 =================
@@ -308,8 +320,15 @@ def dashboard():
 
 @app.route('/api/gpustat/all')
 def api_gpu_data():
+    global LAST_CLIENT_REQUEST
+    LAST_CLIENT_REQUEST = time.time()
     with CACHE_LOCK:
-        return jsonify(GLOBAL_GPU_STATS)
+        stats = GLOBAL_GPU_STATS
+        updated_at = CACHE_UPDATED_AT
+    # 空闲降频期间缓存可能已过期:唤醒采集线程立刻刷新,本次请求先返回缓存数据
+    if SERVERS and time.time() - updated_at > CACHE_STALE_SECONDS:
+        WAKE_EVENT.set()
+    return jsonify(stats)
 
 
 # --- 管理接口 ---
@@ -351,6 +370,7 @@ def add_server():
         SERVERS.append(entry)
 
     save_config()
+    WAKE_EVENT.set()  # 新节点立即参与采集,不必等空闲休眠结束
     return jsonify({"success": True})
 
 
@@ -391,6 +411,7 @@ def add_servers_bulk():
             added += 1
 
     save_config()
+    WAKE_EVENT.set()  # 新节点立即参与采集,不必等空闲休眠结束
     return jsonify({"success": True, "added": added, "skipped": skipped, "invalid": invalid_count})
 
 
@@ -412,6 +433,7 @@ def delete_server():
             SSH_CLIENTS.pop(hostname, None)
 
     save_config()
+    WAKE_EVENT.set()  # 立即刷新缓存,移除已删除的节点
     return jsonify({"success": True})
 
 
