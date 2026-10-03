@@ -1,0 +1,58 @@
+# ===== Python 字节码 / 缓存(必须)=====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ===== 虚拟环境(必须)=====
+venv/
+.venv/
+env/
+ENV/
+
+# ===== 打包 / 分发产物 =====
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# ===== 测试 / 类型检查 / 覆盖率缓存 =====
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+
+# ===== 环境变量 / 敏感信息(必须)=====
+.env
+.env.*
+!.env.example
+
+# ===== SSH 密码等敏感配置(必须,模板文件除外)=====
+secrets*.json
+*.secret.json
+!secrets.example.json
+
+# ===== 日志 =====
+*.log
+logs/
+
+# ===== Flask 实例目录 =====
+instance/
+
+# ===== IDE / 编辑器 =====
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-*
+
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+
+# ===== Jupyter =====
+.ipynb_checkpoints/
