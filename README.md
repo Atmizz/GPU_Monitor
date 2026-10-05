@@ -23,8 +23,8 @@
 
 ## 📸 截图预览
 
-<img width="3840" height="1907" alt="image" src="https://github.com/user-attachments/assets/34e7f9d9-a260-46cd-86b8-aa968a2f5a5a" />
-<img width="3840" height="1907" alt="image" src="https://github.com/user-attachments/assets/8798c73d-4e6a-44a9-8392-82d8fe60b525" />
+<img width="2904" alt="监控面板 - 按服务器分组的 GPU 卡片视图" src="pics/image1.png" />
+<img width="2894" alt="All Nodes and GPUs 数据表格" src="pics/image2.png" />
 
 
 ---
