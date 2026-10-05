@@ -322,6 +322,24 @@ body {
     box-shadow: 0 0 0 2px rgba(32, 201, 151, 0.10), 0 0 6px rgba(32, 201, 151, 0.45);
 }
 
+/* ===== 用户颜色标识 ===== */
+.user-color-dot {
+    width: 9px;
+    height: 9px;
+    min-width: 9px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.10);
+}
+
+.legend-user-pill {
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .server-shortcuts-empty {
     color: #6c757d;
     font-size: 12px;

@@ -71,6 +71,123 @@ const SHORTCUT_GAP = 14;
 const SHORTCUT_EDGE = 12;
 const SHORTCUT_MIN_SCREEN = 900;
 
+// ===== 颜色管理 =====
+// 色板固定 20 色：
+//   - 索引 0：空闲专属绿色（独占，不分配给任何用户）
+//   - 索引 1~19：用户颜色池，共 19 个
+// 用户颜色直接按用户名分配：当前所有活跃用户名排序后，按序号依次循环
+// 取色。同一用户在所有服务器、所有显卡上颜色一致；活跃用户超过 19 个时
+// 不同用户可能重色；用户集变化时部分用户的颜色会随之顺移。
+// 19 个用户色在 OKLab 感知空间按「两两最小距离最大化」搜索得出（同时
+// 满足：白字对比度>=3:1、避开绿色色相带、远离空闲绿/离线灰/Free胶囊青），
+// 色号顺序经过重排使相邻色号（即按用户名排序相邻的用户）差异尽量大。
+// 离线/错误卡片使用灰色状态色（OFFLINE_COLOR），不属于用户色板。
+const GPU_COLOR_PALETTE = [
+    '#198754', // 0: 空闲专属绿
+    '#f66370', // 1: 珊瑚红
+    '#1d54c1', // 2: 蓝
+    '#e16c10', // 3: 橙
+    '#0f92f7', // 4: 天蓝
+    '#ac1b18', // 5: 深红
+    '#06a2ae', // 6: 青
+    '#8a2d98', // 7: 紫
+    '#b98e1b', // 8: 金黄
+    '#b476ef', // 9: 淡紫
+    '#7c5500', // 10: 深棕
+    '#878fd2', // 11: 蓝灰
+    '#877819', // 12: 橄榄黄
+    '#7864c8', // 13: 紫罗兰
+    '#b56350', // 14: 陶红
+    '#086990', // 15: 深青
+    '#c64a9a', // 16: 玫红
+    '#65508e', // 17: 暗紫
+    '#c37faa', // 18: 粉
+    '#8f4965'  // 19: 梅紫
+];
+const IDLE_COLOR_INDEX = 0;
+const OFFLINE_COLOR = '#6c757d';
+
+// 当前活跃用户名（升序），每次拉取数据后重建，是用户取色的唯一依据
+let activeUsernames = [];
+
+function refreshActiveUsernames(data) {
+    const names = new Set();
+    (data || []).forEach(function (node) {
+        const gpus = Array.isArray(node.gpus) ? node.gpus : [];
+        gpus.forEach(function (gpu) {
+            extractGpuUsers(gpu).forEach(function (username) { names.add(username); });
+        });
+    });
+    activeUsernames = Array.from(names).sort();
+}
+
+function getUserColor(username) {
+    const userColorCount = GPU_COLOR_PALETTE.length - 1; // 19 个用户色
+    let index = activeUsernames.indexOf(String(username));
+    if (index === -1) index = activeUsernames.length; // 兜底：视作排在当前用户之后
+    return GPU_COLOR_PALETTE[1 + (index % userColorCount)];
+}
+
+function getGpuColor(node, gpu) {
+    if (node?.error || gpu?.index === 'Err') return OFFLINE_COLOR;
+    const users = extractGpuUsers(gpu);
+    // 绿色独占：无占用进程的空闲显卡
+    if (users.length === 0) return GPU_COLOR_PALETTE[IDLE_COLOR_INDEX];
+    // 多人共用时取列表首位用户的颜色，完整占用信息见悬浮提示
+    return getUserColor(users[0]);
+}
+
+// 图例：空闲/离线徽章 + 用户色胶囊（颜色 -> 用户名，随活跃用户实时更新）
+let legendUserSignature = null;
+
+function renderUserColorLegend() {
+    const container = document.getElementById('gpu-color-legend');
+    if (!container) return;
+
+    // 用户集未变化时跳过重建，避免每 2 秒一次的无谓 DOM 更新
+    const signature = activeUsernames.join('\n');
+    if (signature === legendUserSignature) return;
+    legendUserSignature = signature;
+
+    container.innerHTML = '';
+
+    const idleBadge = document.createElement('span');
+    idleBadge.className = 'badge rounded-pill';
+    idleBadge.style.backgroundColor = GPU_COLOR_PALETTE[IDLE_COLOR_INDEX];
+    idleBadge.textContent = 'Free (Available)';
+    container.appendChild(idleBadge);
+
+    const offlineBadge = document.createElement('span');
+    offlineBadge.className = 'badge rounded-pill';
+    offlineBadge.style.backgroundColor = OFFLINE_COLOR;
+    offlineBadge.textContent = 'Offline / Error';
+    container.appendChild(offlineBadge);
+
+    const note = document.createElement('span');
+    note.className = 'text-muted small';
+    note.textContent = 'User colors:';
+    container.appendChild(note);
+
+    if (activeUsernames.length === 0) {
+        const empty = document.createElement('span');
+        empty.className = 'text-muted small';
+        empty.textContent = 'No active users';
+        container.appendChild(empty);
+        return;
+    }
+
+    // 每位活跃用户一枚胶囊，底色即其在显卡卡片上的颜色；
+    // 超过 19 人循环复用色板时，同色用户会出现同色胶囊
+    activeUsernames.forEach(function (username) {
+        const pill = document.createElement('span');
+        pill.className = 'badge rounded-pill legend-user-pill';
+        pill.style.backgroundColor = getUserColor(username);
+        pill.textContent = username;
+        pill.title = username;
+        container.appendChild(pill);
+    });
+}
+
 // ===== 显卡档次/算力权重映射表（分值越高越靠前） =====
 const GPU_MODEL_TIERS = {
     'H200': 1200, 'H100': 1100, 'H800': 1050, 'A100': 1000,
@@ -228,6 +345,7 @@ document.addEventListener('visibilitychange', function () {
 // ===== DOM Ready =====
 document.addEventListener('DOMContentLoaded', function () {
     updateShortcutPositions();
+    renderUserColorLegend();
 
     dataTable = new DataTable('#dataTable', {
         paging: true,
@@ -779,7 +897,7 @@ function renderUserGpuShortcuts(data) {
             userBtn.dataset.username = username;
             userBtn.innerHTML = `
                 <span class="user-shortcut-left">
-                    <i class="fas fa-user"></i>
+                    <span class="user-color-dot" style="background-color:${getUserColor(username)}" title="User color"></span>
                     <span class="user-shortcut-name" title="${escapeHtml(username)}">${escapeHtml(username)}</span>
                 </span>
                 <span class="user-gpu-count">${uniqueGpus.length} GPU${uniqueGpus.length > 1 ? 's' : ''}</span>
@@ -821,15 +939,20 @@ async function fetchData() {
         // 核心：让数据在渲染前强制遵循侧边栏UI上的顺序
         data = sortDataBySidebar(data);
 
+        // 先按本帧数据重建活跃用户表，卡片与快捷栏的用户取色都以此为依据
+        refreshActiveUsernames(data);
+
         try {
             const displayData = applyGpuFilters(data);
             updateCards(data, displayData);
         } catch (e) { console.error('GPU Card update failed:', e); }
 
-        try { 
+        try {
             renderUserGpuShortcuts(data);
             renderFreeModelShortcuts(data);
         } catch (e) { console.error('Sidebar UI update failed:', e); }
+
+        try { renderUserColorLegend(); } catch (e) { console.error('Legend update failed:', e); }
 
         try { updateServerShortcutStatus(data); } catch (e) { console.error('Server shortcut update failed:', e); }
 
@@ -974,8 +1097,7 @@ function updateCards(allData, displayData) {
 }
 
 function createGpuCard(node, gpu, key) {
-    const temp = gpu['temperature.gpu'];
-    const colorClass = getGpuColorClass(temp, node, gpu);
+    const cardColor = getGpuColor(node, gpu);
     const memUsedGB = getMemoryUsedGB(gpu);
     const memTotalGB = getMemoryTotalGB(gpu);
     const memPercent = Number(gpu.memory) || 0;
@@ -992,7 +1114,7 @@ function createGpuCard(node, gpu, key) {
     wrapper.id = 'gpu-card-' + safeId(key);
 
     wrapper.innerHTML = `
-        <div class="card text-white ${colorClass} h-100 shadow-sm" data-card-color="${colorClass}">
+        <div class="card text-white h-100 shadow-sm" style="background-color:${cardColor};" data-card-color="${cardColor}">
             <div class="card-body pb-2">
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <div class="fw-bold text-truncate gpu-name" title="${escapeHtml(gpu.name || '')}">${escapeHtml(gpu.name || '')}</div>
@@ -1028,11 +1150,10 @@ function updateGpuCard(wrapper, node, gpu) {
     const cardInner = wrapper.querySelector('.card');
     if (!cardInner) return;
 
-    const colorClass = getGpuColorClass(gpu['temperature.gpu'], node, gpu);
-    if (cardInner.dataset.cardColor !== colorClass) {
-        cardInner.classList.remove('bg-primary', 'bg-success', 'bg-warning', 'bg-danger', 'bg-secondary');
-        cardInner.classList.add(colorClass);
-        cardInner.dataset.cardColor = colorClass;
+    const cardColor = getGpuColor(node, gpu);
+    if (cardInner.dataset.cardColor !== cardColor) {
+        cardInner.style.backgroundColor = cardColor;
+        cardInner.dataset.cardColor = cardColor;
     }
 
     const setText = function (selector, value) {
@@ -1086,17 +1207,6 @@ function disposeGpuCard(wrapper) {
     if (!wrapper) return;
     if (wrapper._gpuTooltip) { try { wrapper._gpuTooltip.dispose(); } catch (e) { } }
     wrapper.remove();
-}
-
-function getGpuColorClass(temp, node, gpu) {
-    if (node?.error || gpu?.index === 'Err') return 'bg-secondary';
-    // 绿色专属：空闲无占用进程的显卡，不再用于表达温度
-    if (extractGpuUsers(gpu).length === 0) return 'bg-success';
-    const n = Number(temp);
-    if (temp === '-' || temp === null || temp === undefined || temp === '' || Number.isNaN(n)) return 'bg-primary';
-    if (n > 75) return 'bg-danger';
-    if (n > 50) return 'bg-warning';
-    return 'bg-primary';
 }
 
 function getMemoryUsedGB(gpu) {
