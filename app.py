@@ -563,9 +563,10 @@ def format_panel_stats():
 if rumps is not None:
     from AppKit import (NSImage, NSFont, NSColor, NSAttributedString,
                         NSMutableParagraphStyle, NSBezierPath, NSStatusBar,
+                        NSMenu, NSMenuItem,
                         NSFontAttributeName, NSForegroundColorAttributeName,
                         NSParagraphStyleAttributeName, NSTextAlignmentCenter)
-    from Foundation import NSMakeSize
+    from Foundation import NSMakeSize, NSObject
 
     # 状态栏小方块排版(单位:点,渲染时 2 倍取样保证 Retina 清晰)
     BLOCK_W, BAR_H, SCALE = 26, 18, 2
@@ -611,6 +612,29 @@ if rumps is not None:
         img.setTemplate_(True)
         return img
 
+    def _fmt_mem(mb):
+        """显存 MB 转显示串:≥1G 用 G,否则用 M。"""
+        if mb >= 1024:
+            return f"{mb / 1024:.1f}G"
+        return f"{mb}M"
+
+    def _fmt_users(gpu):
+        """从 user_processes('user(proc,1024M) ...')提取使用者名,无人占用显示 空闲。"""
+        procs = gpu.get("user_processes") or ""
+        names = [p.split("(", 1)[0] for p in procs.split() if p]
+        return ", ".join(names) if names else "空闲"
+
+    class _MenuTarget(NSObject):
+        """独立状态项菜单的动作目标(打开面板/退出)。需保持模块级引用防回收。"""
+
+        def openPanel_(self, _sender):
+            webbrowser.open(f"http://127.0.0.1:{PANEL_PORT}")
+
+        def quitApp_(self, _sender):
+            rumps.quit_application()
+
+    MENU_TARGET = _MenuTarget.alloc().init()
+
     class GPUStatusbarApp(rumps.App):
         """菜单栏入口:状态栏逐服务器小块 + 下拉菜单(总览/节点明细/打开面板/退出)。
 
@@ -625,7 +649,7 @@ if rumps is not None:
             self._open_item = rumps.MenuItem("打开面板", callback=self.open_dashboard, key="o")
             self._quit_item = rumps.MenuItem("退出", callback=self.quit_app, key="q")
             self._status_img = None
-            self._server_items = {}  # hostname -> NSStatusItem(每台服务器一个独立状态项)
+            self._server_items = {}  # hostname -> {'item': NSStatusItem, 'menu': NSMenu}
             self.refresh_menu()
             rumps.Timer(self.refresh_menu, self.REFRESH_SECONDS).start()
 
@@ -643,11 +667,42 @@ if rumps is not None:
             if nsapp is not None and hasattr(nsapp, 'nsstatusitem'):
                 nsapp.nsstatusitem.setImage_(self._status_img)
 
+        def _rebuild_server_menu(self, host, entry, index):
+            """重建单个服务器状态项的下拉菜单:逐卡显存/利用率/使用者 + 打开面板/退出。"""
+            bundle = self._server_items[host]
+            menu = bundle["menu"]
+            menu.removeAllItems()
+
+            def _add_info(title):
+                mi = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, None, "")
+                mi.setEnabled_(False)
+                menu.addItem_(mi)
+
+            name = entry.get("alias") or host
+            _add_info(f"{name}  (S{index})")
+            menu.addItem_(NSMenuItem.separatorItem())
+            if entry.get("error") or not entry.get("gpus"):
+                _add_info(f"⚠ {entry.get('error') or '无 GPU 数据'}")
+            else:
+                for g in entry["gpus"]:
+                    _add_info(
+                        f"GPU{g['index']} · {g['utilization.gpu']}% · "
+                        f"{_fmt_mem(g['memory.used'])}/{_fmt_mem(g['memory.total'])} · "
+                        f"{_fmt_users(g)}"
+                    )
+            menu.addItem_(NSMenuItem.separatorItem())
+            open_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("打开面板", "openPanel:", "o")
+            open_item.setTarget_(MENU_TARGET)
+            menu.addItem_(open_item)
+            quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("退出", "quitApp:", "q")
+            quit_item.setTarget_(MENU_TARGET)
+            menu.addItem_(quit_item)
+
         def _refresh_status_items(self, stats):
             """按逐台开关增删各服务器的独立状态项;全部关闭时回退为三根柱图标。
 
             rumps 自带的状态项平时隐藏,仅承担"全部关闭"时的回退展示;
-            各服务器状态项与它共用同一个下拉菜单(总览/打开面板/退出始终可达)。
+            各服务器状态项使用自己的下拉菜单(该服务器的逐卡信息 + 打开面板/退出)。
             """
             bar = NSStatusBar.systemStatusBar()
             enabled = APP_SETTINGS.get('menubar_servers', {})
@@ -658,14 +713,19 @@ if rumps is not None:
                     desired[host] = (i, s)
             for host in list(self._server_items):
                 if host not in desired:
-                    bar.removeStatusItem_(self._server_items.pop(host))
+                    bundle = self._server_items.pop(host)
+                    bar.removeStatusItem_(bundle["item"])
             for host, (i, s) in desired.items():
-                item = self._server_items.get(host)
-                if item is None:
+                bundle = self._server_items.get(host)
+                if bundle is None:
+                    menu = NSMenu.alloc().init()
+                    menu.setAutoenablesItems_(False)
                     item = bar.statusItemWithLength_(-1)
-                    self._server_items[host] = item
-                item.setImage_(render_server_block(s, i))
-                item.setMenu_(self.menu._menu)
+                    item.setMenu_(menu)
+                    bundle = {"item": item, "menu": menu}
+                    self._server_items[host] = bundle
+                bundle["item"].setImage_(render_server_block(s, i))
+                self._rebuild_server_menu(host, s, i)
             self._status_img = render_plain_icon()
             self._apply_status_image()
             nsapp = getattr(self, '_nsapp', None)
