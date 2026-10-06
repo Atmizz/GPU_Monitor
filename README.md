@@ -75,6 +75,7 @@
 | 📦 **批量导入** | 设置弹窗中可按行粘贴 `hostname,port,username,password`，一次性导入多台节点 |
 | 🔀 **拖拽重排** | 前端直接拖拽调整节点顺序，自动持久化 |
 | 🧩 **动态节点** | 支持前端 / API 动态添加、删除服务器 |
+| 📌 **macOS 状态栏** | 每台服务器一个独立菜单栏状态项（上行 `S*` 序号、下行 空闲/GPU 总数），可在网页设置中**逐台开关**；全部关闭时回退为柱状图标 |
 
 ---
 
@@ -111,13 +112,27 @@ pip install flask paramiko
 python app.py
 ```
 
-启动后，浏览器访问：**http://localhost:8888**
+启动后，浏览器访问：**http://localhost:18888**
+
+**macOS 状态栏**：**每台服务器一个独立状态项**，两行小块：
+
+```
+S1    S2
+2/4   --
+```
+
+- 上行 `S*`：节点序号（与面板中节点顺序一致）；下行 `x/y`：空闲 GPU 数 / GPU 总数；连接失败或无数据显示 `--`
+- 在网页「设置 → 节点列表 **Menu Bar** 列」**逐台开关**：至少一台开启时只显示这些状态项；**全部关闭时**菜单栏回退为简洁柱状图标（下拉菜单仍可达）
+- 每 3 秒刷新，只读内存缓存，零额外 SSH 请求；开关 3 秒内生效、无需重启，选择持久化在 `settings.json`
+- 任意状态项点开下拉菜单：总览一行（在线数 / GPU 总数 / 平均利用率）、逐节点明细（带 S 序号）、「打开面板」（⌘O）、「退出」（⌘Q）
+
+Linux 等无桌面环境会自动跳过状态栏，保持纯 Web 服务行为（`rumps` 依赖仅随 macOS 安装）。
 
 ---
 
 ### 批量添加服务器
 
-1. 启动服务，浏览器打开 `http://<主控机IP>:8888`
+1. 启动服务，浏览器打开 `http://<主控机IP>:18888`
 2. 点击右上角 **「设置」**
 3. 添加节点：填写 `hostname`、`port`、`username`、`password`，可选填 **`alias`（别名，≤64 字符）** 用于面板显示
 4. 保存后返回主页，即可看到各节点 GPU 实时状态（按服务器分组显示，空闲显卡带绿色高亮）
@@ -172,11 +187,13 @@ GPUMonitor/
 | `DELETE` | `/api/admin/servers` | 删除节点，JSON body：`hostname` |
 | `POST` | `/api/admin/servers/reorder` | 调整节点顺序（拖拽重排后调用） |
 | `POST` | `/api/admin/servers/rename` | 设置 / 清除节点别名，JSON body：`hostname`、`alias`（空串清除，≤64 字符） |
+| `GET` | `/api/admin/settings` | 获取全局设置（每台服务器的菜单栏开关 `menubar_servers`） |
+| `POST` | `/api/admin/settings` | 更新全局设置，JSON body：`menubar_servers`（`{hostname: bool}`，合并写入），持久化至 `settings.json` |
 
 **示例：获取所有节点实时状态**
 
 ```bash
-curl http://localhost:8888/api/gpustat/all
+curl http://localhost:18888/api/gpustat/all
 ```
 
 ```json
@@ -211,7 +228,7 @@ curl http://localhost:8888/api/gpustat/all
 
 - **并发限制**：后端采集线程数按节点数自动伸缩（上限 10），如节点数量大（>20），需注意防火墙阈值。
 - **刷新频率与智能降频**：前端每 2 秒拉取一次缓存渲染；后端自适应轮询——只要近期有客户端拉取数据就保持约 1 秒全速轮询，连续约 10 秒无人拉取（页签关闭 / 前端 Pause / 后台标签页被浏览器节流）则自动降为约 30 秒一次，空闲期收到请求会立即唤醒采集线程，回来第一屏不会拿到过期数据。节奏可通过 `app.py` 顶部的 `POLL_INTERVAL_ACTIVE` / `POLL_INTERVAL_IDLE` / `CLIENT_ACTIVE_WINDOW` 常量调整。
-- **安全加固**：面板默认监听 `0.0.0.0:8888`，如需公网访问，请务必置于反向代理（Nginx）+ 鉴权之下，或仅在内网使用。
+- **安全加固**：面板默认监听 `0.0.0.0:18888`，如需公网访问，请务必置于反向代理（Nginx）+ 鉴权之下，或仅在内网使用。
 
 ---
 

@@ -1260,9 +1260,39 @@ function updateTable(gpustats) {
 }
 
 // ===== 弹窗及管理逻辑 =====
+let menubarServersMap = {};  // hostname -> 是否在菜单栏显示(缺省 true)
+
+async function loadAppSettings() {
+    try {
+        const res = await fetch('/api/admin/settings', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        menubarServersMap = (data && data.menubar_servers) || {};
+    } catch (e) {
+        console.error('Load app settings failed', e);
+    }
+}
+
+async function saveMenubarServer(hostname, enabled) {
+    try {
+        const res = await fetch('/api/admin/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ menubar_servers: { [hostname]: enabled } })
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        menubarServersMap[hostname] = enabled;
+    } catch (e) {
+        console.error('Save menubar setting failed', e);
+        alert('Failed to save menu bar setting');
+    }
+}
+
 async function loadSettings() {
+    await loadAppSettings();
+
     const tbody = document.getElementById('server-list-body');
-    tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">Loading...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Loading...</td></tr>';
     try {
         const res = await fetch('/api/admin/servers', { cache: 'no-store' });
         if (!res.ok) throw new Error('Failed to load servers');
@@ -1281,7 +1311,7 @@ async function loadSettings() {
         renderServerShortcuts(servers);
 
         if (servers.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3">No servers. Add one above.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-3">No servers. Add one above.</td></tr>';
             return;
         }
 
@@ -1295,9 +1325,22 @@ async function loadSettings() {
                     </td>
                     <td class="align-middle">${escapeHtml(String(s.port))}</td>
                     <td class="align-middle"><span class="badge bg-secondary text-light">${escapeHtml(s.username)}</span></td>
+                    <td class="text-center align-middle">
+                        <div class="form-check form-switch d-inline-block m-0">
+                            <input class="form-check-input menubar-switch" type="checkbox" ${menubarServersMap[s.hostname] !== false ? 'checked' : ''} title="Show this server in the macOS menu bar">
+                        </div>
+                    </td>
                     <td class="text-end align-middle"><button class="btn btn-outline-danger btn-sm" onclick="deleteServer('${escapeJsString(s.hostname)}')"><i class="fas fa-trash-alt"></i></button></td>
                 </tr>
             `);
+        });
+
+        // 菜单栏逐台开关:切换后由后端 3 秒内增删对应状态项
+        tbody.querySelectorAll('.menubar-switch').forEach(function (input) {
+            input.addEventListener('change', function () {
+                const host = input.closest('tr')?.getAttribute('data-host');
+                if (host) saveMenubarServer(host, input.checked);
+            });
         });
 
         // 别名行内编辑：失焦或回车保存
