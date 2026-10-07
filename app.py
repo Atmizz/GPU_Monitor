@@ -569,7 +569,8 @@ if rumps is not None:
     from Foundation import NSMakeSize, NSObject
 
     # 状态栏小方块排版(单位:点,渲染时 2 倍取样保证 Retina 清晰)
-    BLOCK_W, BAR_H, SCALE = 26, 18, 2
+    BLOCK_W, BAR_H, SCALE = 30, 23, 2
+    STATUS_FONT_SIZE = 10  # 状态栏文字字号(点)
 
     def _draw_text_centered(text, x, baseline_y, width, font_size, weight):
         para = NSMutableParagraphStyle.alloc().init()
@@ -592,8 +593,9 @@ if rumps is not None:
             bottom = f"{free}/{len(gpus)}"
         img = NSImage.alloc().initWithSize_((BLOCK_W * SCALE, BAR_H * SCALE))
         img.lockFocus()
-        _draw_text_centered(f"S{index}", 0, 18.8, BLOCK_W * SCALE, 8.2 * SCALE, 0.35)
-        _draw_text_centered(bottom, 0, 1.6, BLOCK_W * SCALE, 8.2 * SCALE, 0.15)
+        # 基线整体偏下:顶部留白约 2pt、底部约 1.5pt,斜杠不触顶
+        _draw_text_centered(f"S{index}", 0, 23, BLOCK_W * SCALE, STATUS_FONT_SIZE * SCALE, 0.35)
+        _draw_text_centered(bottom, 0, 5, BLOCK_W * SCALE, STATUS_FONT_SIZE * SCALE, 0.15)
         img.unlockFocus()
         img.setSize_((BLOCK_W, BAR_H))
         img.setTemplate_(True)
@@ -601,14 +603,15 @@ if rumps is not None:
 
     def render_plain_icon():
         """状态栏显示关闭时的简洁图标:三根上升的负载柱,不带每服务器数据,菜单仍可打开。"""
-        size = 18 * SCALE
-        img = NSImage.alloc().initWithSize_((size, size))
+        size_w = 18
+        img = NSImage.alloc().initWithSize_((size_w * SCALE, BAR_H * SCALE))
         img.lockFocus()
         NSColor.blackColor().set()
-        for x_pt, h_pt in ((2, 9), (7.5, 13), (13, 17)):
-            NSBezierPath.bezierPathWithRect_(((x_pt * SCALE, 2), (3 * SCALE, h_pt * SCALE))).fill()
+        max_h = BAR_H - 4
+        for x_pt, frac in ((2, 0.5), (7.5, 0.72), (13, 0.94)):
+            NSBezierPath.bezierPathWithRect_(((x_pt * SCALE, 2 * SCALE), (3 * SCALE, max_h * frac * SCALE))).fill()
         img.unlockFocus()
-        img.setSize_((size / SCALE, size / SCALE))
+        img.setSize_((size_w, BAR_H))
         img.setTemplate_(True)
         return img
 
