@@ -217,6 +217,14 @@ def get_ssh_client(host_details):
     raise last_error
 
 
+def _parse_smi_int(value):
+    """nvidia-smi 数值字段转 int;N/A、[N/A]、空串等 NVIDIA 允许的占位输出返回 None。"""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch_single_server_data(host_details):
     hostname = host_details.get('hostname')
     if not hostname:
@@ -275,15 +283,15 @@ def fetch_single_server_data(host_details):
 
         final_gpu_list = []
         for gpu in gpus:
-            try:
-                mem_used = int(float(gpu['memory.used']))
-                mem_total = int(float(gpu['memory.total']))
-                temp = int(float(gpu['temperature.gpu']))
-                util = int(float(gpu['utilization.gpu']))
-                power_draw = int(float(gpu['power.draw']))
-                power_limit = int(float(gpu['power.limit']))
-            except ValueError:
-                mem_used = mem_total = temp = util = power_draw = power_limit = 0
+            # 逐字段独立解析:nvidia-smi 允许输出 N/A(部分机型/驱动的功耗等字段),
+            # 某一字段解析失败不能连坐其它有效字段,也不能归零伪装成正常读数;
+            # 失败字段传 None,网页端与菜单栏显示为 "-"
+            mem_used = _parse_smi_int(gpu['memory.used'])
+            mem_total = _parse_smi_int(gpu['memory.total'])
+            temp = _parse_smi_int(gpu['temperature.gpu'])
+            util = _parse_smi_int(gpu['utilization.gpu'])
+            power_draw = _parse_smi_int(gpu['power.draw'])
+            power_limit = _parse_smi_int(gpu['power.limit'])
 
             procs = processes_by_uuid.get(gpu['uuid'], [])
             proc_strs = []
@@ -304,7 +312,7 @@ def fetch_single_server_data(host_details):
                 "utilization.gpu": util,
                 "memory.used": mem_used,
                 "memory.total": mem_total,
-                "memory": round((mem_used / mem_total) * 100) if mem_total > 0 else 0,
+                "memory": round((mem_used / mem_total) * 100) if mem_total and mem_used is not None else 0,
                 "power.draw": power_draw,
                 "enforced.power.limit": power_limit,
                 "user_processes": " ".join(proc_strs),
@@ -552,7 +560,8 @@ def format_panel_stats():
     if stats:
         online = [s for s in stats if not s.get("error")]
         gpu_total = sum(len(s.get("gpus", [])) for s in online)
-        utils = [g["utilization.gpu"] for s in online for g in s.get("gpus", [])]
+        utils = [g["utilization.gpu"] for s in online for g in s.get("gpus", [])
+                 if g["utilization.gpu"] is not None]
         avg = round(sum(utils) / len(utils)) if utils else 0
         return f"{len(online)}/{len(stats)} 台在线 · {gpu_total} GPU · 平均 {avg}%"
     with SERVERS_LOCK:
@@ -616,7 +625,9 @@ if rumps is not None:
         return img
 
     def _fmt_mem(mb):
-        """显存 MB 转显示串:≥1G 用 G,否则用 M。"""
+        """显存 MB 转显示串:≥1G 用 G,否则用 M;无数据(N/A 解析为 None)显示 -。"""
+        if mb is None:
+            return "-"
         if mb >= 1024:
             return f"{mb / 1024:.1f}G"
         return f"{mb}M"
@@ -688,8 +699,10 @@ if rumps is not None:
                 _add_info(f"⚠ {entry.get('error') or '无 GPU 数据'}")
             else:
                 for g in entry["gpus"]:
+                    util = g.get("utilization.gpu")
+                    util_txt = "-" if util is None else f"{util}%"
                     _add_info(
-                        f"GPU{g['index']} · {g['utilization.gpu']}% · "
+                        f"GPU{g['index']} · {util_txt} · "
                         f"{_fmt_mem(g['memory.used'])}/{_fmt_mem(g['memory.total'])} · "
                         f"{_fmt_users(g)}"
                     )
@@ -751,8 +764,9 @@ if rumps is not None:
                 else:
                     gpus = s.get("gpus", [])
                     if gpus:
-                        util = round(sum(g["utilization.gpu"] for g in gpus) / len(gpus))
-                        self.menu.add(f"{tag} · {name} · {len(gpus)} GPU · {util}%")
+                        utils = [g["utilization.gpu"] for g in gpus if g["utilization.gpu"] is not None]
+                        avg_util = round(sum(utils) / len(utils)) if utils else 0
+                        self.menu.add(f"{tag} · {name} · {len(gpus)} GPU · {avg_util}%")
                     else:
                         self.menu.add(f"{tag} · {name} · 无 GPU 数据")
             self.menu.add(rumps.separator)
