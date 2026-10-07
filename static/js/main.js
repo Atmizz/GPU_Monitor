@@ -12,6 +12,8 @@ let selectedUser = null;
 let selectedFreeModel = null; 
 
 let lastServerStatusData = null;
+let lastGpuData = null;     // 最近一轮完整数据,表格从折叠展开时用它补刷,不必等下一个轮询
+let tableCollapsed = true;  // All Nodes and GPUs 表格折叠状态:折叠期间 fetchData 跳过表格重绘
 const gpuCardMap = new Map();
 
 // ===== 服务器分组区块状态 =====
@@ -364,10 +366,10 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     // ===== All Nodes and GPUs 表格默认折叠 =====
-    // 每次页面加载都默认收起；会话内切换仅保存在内存中
+    // 每次页面加载都默认收起；会话内切换仅保存在内存中（折叠状态 tableCollapsed 为全局变量,
+    // fetchData 据此跳过不可见表格的重绘）
     const tableCard = document.getElementById('nodes-table-card');
     const tableHeader = document.getElementById('nodes-table-header');
-    let tableCollapsed = true;
 
     const applyTableCollapsed = function () {
         tableCard.classList.toggle('collapsed', tableCollapsed);
@@ -378,7 +380,11 @@ document.addEventListener('DOMContentLoaded', function () {
         tableCollapsed = !tableCollapsed;
         applyTableCollapsed();
         if (!tableCollapsed && dataTable) {
-            // 容器 display:none 期间 DataTables 列宽测量不准，展开时重新校准
+            // 折叠期间表格未随轮询刷新,展开时先用最近一轮数据补刷;
+            // 容器 display:none 期间 DataTables 列宽测量不准,随后重新校准
+            if (lastGpuData) {
+                try { updateTable(applyGpuFilters(lastGpuData)); } catch (e) { console.error('Table update failed:', e); }
+            }
             try { dataTable.columns.adjust(); } catch (e) { }
         }
     });
@@ -730,6 +736,8 @@ function applyGpuFilters(data) {
 }
 
 // ===== 渲染 Free Models =====
+let freeModelShortcutsSignature = null;  // 上次渲染的签名,内容不变时跳过 DOM 重建
+
 function renderFreeModelShortcuts(data) {
     const modelStats = {};
     let globalTotal = 0, globalFree = 0;
@@ -762,6 +770,14 @@ function renderFreeModelShortcuts(data) {
         if (weightA !== weightB) return weightB - weightA;
         return a.localeCompare(b);
     });
+
+    // 签名除 Free/总数外还包含具体空闲卡号:数量不变但空闲卡换代(一退一占)时,
+    // 悬停高亮的目标卡也会变,必须重建。选中态由 updateAllActiveStates 单独维护,跳过不受影响
+    const signature = models
+        .map(m => `${m}:${modelStats[m].free}/${modelStats[m].total}:${modelStats[m].freeKeys.join('+')}`)
+        .join('|') + `#${globalFree}/${globalTotal}:${globalFreeKeys.join('+')}`;
+    if (signature === freeModelShortcutsSignature) return;
+    freeModelShortcutsSignature = signature;
 
     const renderTarget = (containerId, isMobile) => {
         const container = document.getElementById(containerId);
@@ -854,6 +870,8 @@ function renderFreeModelShortcuts(data) {
 }
 
 // ===== 用户快捷栏 =====
+let userShortcutsSignature = null;  // 上次渲染的签名,内容不变时跳过 DOM 重建
+
 function renderUserGpuShortcuts(data) {
     const userMap = buildUserGpuMap(data);
     
@@ -872,11 +890,20 @@ function renderUserGpuShortcuts(data) {
 
     userGpus.sort((a, b) => {
         if (b.uniqueGpus.length !== a.uniqueGpus.length) {
-            return b.uniqueGpus.length - a.uniqueGpus.length; 
+            return b.uniqueGpus.length - a.uniqueGpus.length;
         }
-        return a.username.localeCompare(b.username); 
+        return a.username.localeCompare(b.username);
     });
-    
+
+    // 签名包含每位用户占用的具体卡号:只比数量不够,「一退一占、数量不变」时
+    // 悬停高亮的目标卡也会变,必须重建。选中态由 updateAllActiveStates 单独维护,
+    // 跳过重建不影响点击交互
+    const signature = userGpus
+        .map(u => `${u.username}:${u.uniqueGpus.map(g => `${g.hostname}::${g.index}`).join('+')}`)
+        .join('|');
+    if (signature === userShortcutsSignature) return;
+    userShortcutsSignature = signature;
+
     const renderTarget = (containerId, isMobile) => {
         const container = document.getElementById(containerId);
         if (!container) return;
@@ -938,6 +965,7 @@ async function fetchData() {
         
         // 核心：让数据在渲染前强制遵循侧边栏UI上的顺序
         data = sortDataBySidebar(data);
+        lastGpuData = data;
 
         // 先按本帧数据重建活跃用户表，卡片与快捷栏的用户取色都以此为依据
         refreshActiveUsernames(data);
@@ -956,10 +984,13 @@ async function fetchData() {
 
         try { updateServerShortcutStatus(data); } catch (e) { console.error('Server shortcut update failed:', e); }
 
-        try {
-            const displayData = applyGpuFilters(data);
-            updateTable(displayData);
-        } catch (e) { console.error('Table update failed:', e); }
+        if (!tableCollapsed) {
+            // 表格折叠时跳过重绘:隐藏状态下 draw() 纯属白算,展开时会用 lastGpuData 补刷
+            try {
+                const displayData = applyGpuFilters(data);
+                updateTable(displayData);
+            } catch (e) { console.error('Table update failed:', e); }
+        }
 
         document.getElementById('update-timestamp').textContent = new Date().toLocaleTimeString();
         statusBadge.className = 'badge bg-success';
@@ -1210,12 +1241,15 @@ function disposeGpuCard(wrapper) {
 }
 
 function getMemoryUsedGB(gpu) {
-    const v = Number(gpu?.['memory.used']);
+    // null = 后端解析失败(N/A),显示 "-" 而不是伪装成 0
+    if (gpu?.['memory.used'] == null) return '-';
+    const v = Number(gpu['memory.used']);
     return (Number.isFinite(v) && v > 0) ? (v / 1024).toFixed(1) : '0.0';
 }
 
 function getMemoryTotalGB(gpu) {
-    const v = Number(gpu?.['memory.total']);
+    if (gpu?.['memory.total'] == null) return '-';
+    const v = Number(gpu['memory.total']);
     return (Number.isFinite(v) && v > 0) ? (v / 1024).toFixed(0) : '0';
 }
 
@@ -1240,7 +1274,7 @@ function updateTable(gpustats) {
                     `[${escapeHtml(String(gpu.index || ''))}] ${escapeHtml(gpu.name || '')}`,
                     `${escapeHtml(String(gpu['temperature.gpu'] || '-'))}°C`,
                     `<div class="progress" style="height:20px;position:relative;"><div class="progress-bar bg-success" role="progressbar" style="width:${Math.max(0, Math.min(100, util))}%"></div><span style="position:absolute;width:100%;text-align:center;color:black;font-size:0.8rem;line-height:20px;">${escapeHtml(String(gpu['utilization.gpu'] || '-'))}%</span></div>`,
-                    `${escapeHtml(String(gpu.memory || 0))}% <span class="text-muted small">(${escapeHtml(String(gpu['memory.used'] || 0))} / ${escapeHtml(String(gpu['memory.total'] || 0))})</span>`,
+                    `${escapeHtml(String(gpu.memory || 0))}% <span class="text-muted small">(${escapeHtml(String(gpu['memory.used'] ?? '-'))} / ${escapeHtml(String(gpu['memory.total'] ?? '-'))})</span>`,
                     `${escapeHtml(String(gpu['power.draw'] || '-'))} / ${escapeHtml(String(gpu['enforced.power.limit'] || '-'))} W`,
                     `<span class="text-truncate d-block" style="max-width:400px;" title="${escapeHtml(gpu.user_processes || gpu.users || '')}">${escapeHtml(gpu.user_processes || gpu.users || '')}</span>`
                 ]);
