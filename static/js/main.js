@@ -131,7 +131,7 @@ function getUserColor(username) {
 }
 
 function getGpuColor(node, gpu) {
-    if (node?.error || gpu?.index === 'Err') return OFFLINE_COLOR;
+    if (node?.error || isGpuUnavailable(gpu) || gpu?.process_error || gpu?.users == null) return OFFLINE_COLOR;
     const users = extractGpuUsers(gpu);
     // 绿色独占：无占用进程的空闲显卡
     if (users.length === 0) return GPU_COLOR_PALETTE[IDLE_COLOR_INDEX];
@@ -602,6 +602,12 @@ function updateServerShortcutStatus(data) {
             dot.title = `Offline: ${node.error}`;
             return;
         }
+        const failed = (node.gpus || []).filter(gpu => isGpuUnavailable(gpu) || gpu.process_error).length;
+        if (failed) {
+            dot.className = 'server-status-dot degraded';
+            dot.title = `Online · ${failed} GPU error`;
+            return;
+        }
         dot.className = 'server-status-dot online';
         dot.title = 'Online';
     });
@@ -657,7 +663,7 @@ function updateFreeModelActiveState() {
 
 // ===== 用户解析 =====
 function extractGpuUsers(gpu) {
-    if (!gpu) return [];
+    if (!gpu || isGpuUnavailable(gpu) || gpu.process_error) return [];
     const raw = String(gpu.user_processes || gpu.users || '').trim();
     if (!raw || raw === 'None' || raw === '-') return [];
     const users = [];
@@ -676,6 +682,22 @@ function extractGpuUsers(gpu) {
         }
     }
     return users;
+}
+
+function isGpuUnavailable(gpu) {
+    return !gpu || Boolean(gpu.error) || gpu.index === 'Err';
+}
+
+function isGpuFree(gpu) {
+    return !isGpuUnavailable(gpu) && !gpu.process_error && gpu.users != null
+        && Number(gpu.users) === 0 && extractGpuUsers(gpu).length === 0;
+}
+
+function gpuOccupancyLabel(gpu) {
+    if (isGpuUnavailable(gpu)) return 'Unavailable';
+    if (gpu.process_error || gpu.users == null) return 'Unknown';
+    const occupants = extractGpuUsers(gpu);
+    return occupants.length > 0 ? occupants.join(', ') : (isGpuFree(gpu) ? 'Free' : 'In use');
 }
 
 function buildUserGpuMap(data) {
@@ -697,8 +719,9 @@ function buildUserGpuMap(data) {
 // ===== 过滤 =====
 function filterGpuDataByFreeGpu(data) {
     return (data || []).map(function (node) {
+        if (node.error) return null;
         const gpus = Array.isArray(node.gpus) ? node.gpus.filter(function (gpu) {
-            return extractGpuUsers(gpu).length === 0;
+            return isGpuFree(gpu);
         }) : [];
         return gpus.length === 0 ? null : { ...node, gpus };
     }).filter(Boolean);
@@ -727,7 +750,7 @@ function applyGpuFilters(data) {
         displayData = displayData.map(node => {
             const gpus = Array.isArray(node.gpus) ? node.gpus.filter(gpu => {
                 const shortName = simplifyModelName(gpu.name);
-                return extractGpuUsers(gpu).length === 0 && shortName === selectedFreeModel;
+                return isGpuFree(gpu) && shortName === selectedFreeModel;
             }) : [];
             return gpus.length === 0 ? null : { ...node, gpus };
         }).filter(Boolean);
@@ -747,7 +770,7 @@ function renderFreeModelShortcuts(data) {
         const gpus = Array.isArray(node.gpus) ? node.gpus : [];
         gpus.forEach(gpu => {
             globalTotal++;
-            const isFree = extractGpuUsers(gpu).length === 0;
+            const isFree = !node.error && isGpuFree(gpu);
             if (isFree) {
                 globalFree++;
                 globalFreeKeys.push(`${node.hostname}::${gpu.index}`);
@@ -1069,12 +1092,14 @@ function updateCards(allData, displayData) {
                 countBadge.className = 'badge bg-danger section-gpu-count ms-auto';
                 countBadge.textContent = 'Offline';
             } else {
-                const freeCount = gpus.filter(gpu => extractGpuUsers(gpu).length === 0).length;
+                const freeCount = gpus.filter(isGpuFree).length;
+                const errorCount = gpus.filter(gpu => isGpuUnavailable(gpu) || gpu.process_error).length;
                 const freeHtml = freeCount > 0
                     ? `<span class="section-free-pill">${freeCount} free</span>`
                     : `<span class="section-free-zero">${freeCount} free</span>`;
                 countBadge.className = 'badge bg-secondary section-gpu-count ms-auto';
-                countBadge.innerHTML = `${gpus.length} GPU${gpus.length > 1 ? 's' : ''} · ${freeHtml}`;
+                countBadge.innerHTML = `${gpus.length} GPU${gpus.length > 1 ? 's' : ''} · ${freeHtml}`
+                    + (errorCount ? ` · <span class="text-warning">${errorCount} error</span>` : '');
             }
         }
 
@@ -1132,10 +1157,8 @@ function createGpuCard(node, gpu, key) {
     const memUsedGB = getMemoryUsedGB(gpu);
     const memTotalGB = getMemoryTotalGB(gpu);
     const memPercent = Number(gpu.memory) || 0;
-    const isErrCard = gpu.index === 'Err';
-    const occupants = isErrCard ? [] : extractGpuUsers(gpu);
-    const occupantsText = occupants.length > 0 ? escapeHtml(occupants.join(', ')) : (isErrCard ? '—' : 'Free');
-    const occupantsTitle = occupants.length > 0 ? occupants.join(', ') : (isErrCard ? 'Unknown (offline)' : 'No active user');
+    const occupantsText = escapeHtml(gpuOccupancyLabel(gpu));
+    const occupantsTitle = gpu.error || gpu.process_error || gpuOccupancyLabel(gpu);
 
     const wrapper = document.createElement('div');
     wrapper.className = 'col-12 col-xs-6 col-sm-6 col-md-4 col-lg-3';
@@ -1153,17 +1176,17 @@ function createGpuCard(node, gpu, key) {
                 </div>
                 <div class="d-flex align-items-center small mb-2">
                     <i class="fas fa-user me-1 opacity-50 flex-shrink-0"></i>
-                    <span class="gpu-occupants text-truncate${occupants.length === 0 && !isErrCard ? ' gpu-occupants-free' : ''}" title="${escapeHtml(occupantsTitle)}">${occupantsText}</span>
+                    <span class="gpu-occupants text-truncate${isGpuFree(gpu) ? ' gpu-occupants-free' : ''}" title="${escapeHtml(occupantsTitle)}">${occupantsText}</span>
                 </div>
                 <div class="d-flex justify-content-between small"><span>Memory</span><span class="gpu-mem-text opacity-75">${memUsedGB}/${memTotalGB} GB</span></div>
                 <div class="progress progress-subtle"><div class="progress-bar bg-light gpu-memory-progress" role="progressbar" style="width:${memPercent}%"></div></div>
             </div>
             <div class="card-footer text-white small bg-black bg-opacity-10 border-0">
                 <div class="row text-center g-1">
-                    <div class="col-3" title="Temp"><i class="fas fa-thermometer-half"></i><span class="gpu-temp fw-bold ms-1">${escapeHtml(String(gpu['temperature.gpu'] || '-'))}</span>°</div>
-                    <div class="col-3" title="Power"><i class="fas fa-bolt"></i><span class="gpu-power fw-bold ms-1">${escapeHtml(String(gpu['power.draw'] || '-'))}</span>W</div>
-                    <div class="col-3" title="Util"><i class="fas fa-tachometer-alt"></i><span class="gpu-util fw-bold ms-1">${escapeHtml(String(gpu['utilization.gpu'] || '-'))}</span>%</div>
-                    <div class="col-3" title="Users"><i class="fas fa-users"></i><span class="gpu-users fw-bold ms-1">${escapeHtml(String(gpu.users || gpu.user_processes || ''))}</span></div>
+                    <div class="col-3" title="Temp"><i class="fas fa-thermometer-half"></i><span class="gpu-temp fw-bold ms-1">${escapeHtml(String(gpu['temperature.gpu'] ?? '-'))}</span>°</div>
+                    <div class="col-3" title="Power"><i class="fas fa-bolt"></i><span class="gpu-power fw-bold ms-1">${escapeHtml(String(gpu['power.draw'] ?? '-'))}</span>W</div>
+                    <div class="col-3" title="Util"><i class="fas fa-tachometer-alt"></i><span class="gpu-util fw-bold ms-1">${escapeHtml(String(gpu['utilization.gpu'] ?? '-'))}</span>%</div>
+                    <div class="col-3" title="Users"><i class="fas fa-users"></i><span class="gpu-users fw-bold ms-1">${escapeHtml(String(gpu.users ?? '-'))}</span></div>
                 </div>
             </div>
         </div>
@@ -1202,18 +1225,16 @@ function updateGpuCard(wrapper, node, gpu) {
     }
     const occupantsEl = wrapper.querySelector('.gpu-occupants');
     if (occupantsEl) {
-        const isErrCard = gpu.index === 'Err';
-        const occupants = isErrCard ? [] : extractGpuUsers(gpu);
-        const text = occupants.length > 0 ? occupants.join(', ') : (isErrCard ? '—' : 'Free');
+        const text = gpuOccupancyLabel(gpu);
         if (occupantsEl.textContent.trim() !== text) occupantsEl.textContent = text;
-        occupantsEl.classList.toggle('gpu-occupants-free', occupants.length === 0 && !isErrCard);
-        occupantsEl.title = occupants.length > 0 ? text : (isErrCard ? 'Unknown (offline)' : 'No active user');
+        occupantsEl.classList.toggle('gpu-occupants-free', isGpuFree(gpu));
+        occupantsEl.title = gpu.error || gpu.process_error || text;
     }
     setText('.gpu-index', String(gpu.index || ''));
-    setText('.gpu-temp', String(gpu['temperature.gpu'] || '-'));
-    setText('.gpu-power', String(gpu['power.draw'] || '-'));
-    setText('.gpu-util', String(gpu['utilization.gpu'] || '-'));
-    setText('.gpu-users', String(gpu.users || gpu.user_processes || ''));
+    setText('.gpu-temp', String(gpu['temperature.gpu'] ?? '-'));
+    setText('.gpu-power', String(gpu['power.draw'] ?? '-'));
+    setText('.gpu-util', String(gpu['utilization.gpu'] ?? '-'));
+    setText('.gpu-users', String(gpu.users ?? '-'));
 
     const memUsedGB = getMemoryUsedGB(gpu);
     const memTotalGB = getMemoryTotalGB(gpu);
@@ -1256,7 +1277,7 @@ function getMemoryTotalGB(gpu) {
 function safeId(value) { return String(value).replace(/[^a-zA-Z0-9_-]/g, '_'); }
 
 function buildTooltipContent(node, gpu) {
-    return `<div class="text-start small">${escapeHtml(gpu.user_processes || gpu.users || 'None')}</div>`;
+    return `<div class="text-start small">${escapeHtml(gpu.error || gpu.process_error || gpu.user_processes || gpuOccupancyLabel(gpu))}</div>`;
 }
 
 // ===== Table 逻辑 =====
@@ -1268,15 +1289,24 @@ function updateTable(gpustats) {
         if (gpus.length > 0) {
             const nodeLabel = node.alias ? `${node.alias} (${node.hostname})` : node.hostname;
             gpus.forEach(function (gpu) {
+                if (isGpuUnavailable(gpu)) {
+                    newData.push([
+                        escapeHtml(nodeLabel),
+                        `[${escapeHtml(String(gpu.index))}] ${escapeHtml(gpu.name || '')}`,
+                        '-', '-', '-', '-',
+                        `<span class="text-danger small">${escapeHtml(gpu.error || 'Unavailable')}</span>`
+                    ]);
+                    return;
+                }
                 const util = Number(gpu['utilization.gpu']) || 0;
                 newData.push([
                     escapeHtml(nodeLabel),
                     `[${escapeHtml(String(gpu.index || ''))}] ${escapeHtml(gpu.name || '')}`,
-                    `${escapeHtml(String(gpu['temperature.gpu'] || '-'))}°C`,
-                    `<div class="progress" style="height:20px;position:relative;"><div class="progress-bar bg-success" role="progressbar" style="width:${Math.max(0, Math.min(100, util))}%"></div><span style="position:absolute;width:100%;text-align:center;color:black;font-size:0.8rem;line-height:20px;">${escapeHtml(String(gpu['utilization.gpu'] || '-'))}%</span></div>`,
-                    `${escapeHtml(String(gpu.memory || 0))}% <span class="text-muted small">(${escapeHtml(String(gpu['memory.used'] ?? '-'))} / ${escapeHtml(String(gpu['memory.total'] ?? '-'))})</span>`,
-                    `${escapeHtml(String(gpu['power.draw'] || '-'))} / ${escapeHtml(String(gpu['enforced.power.limit'] || '-'))} W`,
-                    `<span class="text-truncate d-block" style="max-width:400px;" title="${escapeHtml(gpu.user_processes || gpu.users || '')}">${escapeHtml(gpu.user_processes || gpu.users || '')}</span>`
+                    `${escapeHtml(String(gpu['temperature.gpu'] ?? '-'))}°C`,
+                    `<div class="progress" style="height:20px;position:relative;"><div class="progress-bar bg-success" role="progressbar" style="width:${Math.max(0, Math.min(100, util))}%"></div><span style="position:absolute;width:100%;text-align:center;color:black;font-size:0.8rem;line-height:20px;">${escapeHtml(String(gpu['utilization.gpu'] ?? '-'))}%</span></div>`,
+                    `${escapeHtml(String(gpu.memory ?? '-'))}% <span class="text-muted small">(${escapeHtml(String(gpu['memory.used'] ?? '-'))} / ${escapeHtml(String(gpu['memory.total'] ?? '-'))})</span>`,
+                    `${escapeHtml(String(gpu['power.draw'] ?? '-'))} / ${escapeHtml(String(gpu['enforced.power.limit'] ?? '-'))} W`,
+                    `<span class="text-truncate d-block" style="max-width:400px;" title="${escapeHtml(gpu.process_error || gpu.user_processes || gpuOccupancyLabel(gpu))}">${escapeHtml(gpu.process_error ? 'Unknown' : (gpu.user_processes || gpuOccupancyLabel(gpu)))}</span>`
                 ]);
             });
         } else if (node.error) {

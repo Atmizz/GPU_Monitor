@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import sys
 import time
@@ -8,6 +9,8 @@ import webbrowser
 import paramiko
 from flask import Flask, render_template, request, jsonify
 from concurrent.futures import ThreadPoolExecutor
+from gpu_collector import collect_gpu_data, is_gpu_free
+from collection_safety import RetryBackoff
 
 try:
     import rumps  # macOS 状态栏;非 Mac 环境缺依赖时自动降级为纯 Web 服务
@@ -38,6 +41,8 @@ SERVERS_LOCK = threading.Lock()
 
 SSH_CLIENTS = {}
 SSH_LOCK = threading.Lock()
+NODE_BACKOFF = RetryBackoff()
+logger = logging.getLogger(__name__)
 
 GLOBAL_GPU_STATS = []
 CACHE_LOCK = threading.Lock()
@@ -153,18 +158,6 @@ def save_config():
 load_config()
 load_app_settings()
 
-# ================= 命令定义 =================
-SEPARATOR = "|||SECTION_SPLIT|||"
-NVIDIA_SMI_GPU_FIELDS = (
-    'uuid', 'index', 'name', 'temperature.gpu', 'utilization.gpu',
-    'memory.used', 'memory.total', 'power.draw', 'power.limit'
-)
-CMD_GPU = f'nvidia-smi --query-gpu={",".join(NVIDIA_SMI_GPU_FIELDS)} --format=csv,noheader,nounits'
-NVIDIA_SMI_PROC_FIELDS = ('gpu_uuid', 'pid', 'process_name', 'used_gpu_memory')
-CMD_PROC = f'nvidia-smi --query-compute-apps={",".join(NVIDIA_SMI_PROC_FIELDS)} --format=csv,noheader,nounits'
-COMBINED_CMD = f"{CMD_GPU} ; echo '{SEPARATOR}' ; {CMD_PROC}"
-
-
 # ================= 核心逻辑 =================
 def get_ssh_client(host_details):
     hostname = host_details['hostname']
@@ -217,14 +210,6 @@ def get_ssh_client(host_details):
     raise last_error
 
 
-def _parse_smi_int(value):
-    """nvidia-smi 数值字段转 int;N/A、[N/A]、空串等 NVIDIA 允许的占位输出返回 None。"""
-    try:
-        return int(float(value))
-    except (TypeError, ValueError):
-        return None
-
-
 def fetch_single_server_data(host_details):
     hostname = host_details.get('hostname')
     if not hostname:
@@ -232,98 +217,32 @@ def fetch_single_server_data(host_details):
         return {"hostname": None, "alias": host_details.get('alias', ''),
                 "error": "Missing hostname (check secrets.json)", "gpus": []}
     alias = host_details.get('alias', '')
+    source = (hostname, str(host_details.get('port', 22)), host_details.get('username', ''))
+    remaining, last_error = NODE_BACKOFF.pending(source)
+    if remaining:
+        return {"hostname": hostname, "alias": alias, "gpus": [],
+                "error": f"Connection/collection backoff ({remaining:.0f}s remaining): {last_error}"}
     try:
         client = get_ssh_client(host_details)
 
-        stdin, stdout, stderr = client.exec_command(COMBINED_CMD, timeout=15)
-        output = stdout.read().decode('utf-8').strip()
+        with CACHE_LOCK:
+            previous_gpus = next((entry.get('gpus', []) for entry in GLOBAL_GPU_STATS
+                                  if entry.get('hostname') == hostname), [])
+        final_gpu_list = collect_gpu_data(client, previous_gpus, source=source)
 
-        if not output:
-            return {"hostname": hostname, "alias": alias, "error": "Empty response"}
-
-        parts = output.split(SEPARATOR)
-        gpu_lines = parts[0].strip().splitlines() if len(parts) > 0 else []
-        proc_lines = parts[1].strip().splitlines() if len(parts) > 1 else []
-
-        gpus = []
-        for line in gpu_lines:
-            if not line.strip(): continue
-            vals = [v.strip() for v in line.split(',')]
-            if len(vals) < len(NVIDIA_SMI_GPU_FIELDS): continue
-            gpus.append(dict(zip(NVIDIA_SMI_GPU_FIELDS, vals)))
-
-        if not gpus:
-            return {"hostname": hostname, "alias": alias, "error": "No GPUs found"}
-
-        processes_by_uuid = {}
-        all_pids = set()
-
-        for line in proc_lines:
-            if not line.strip(): continue
-            vals = [v.strip() for v in line.split(',')]
-            p_info = dict(zip(NVIDIA_SMI_PROC_FIELDS, vals))
-            uuid = p_info['gpu_uuid']
-            if uuid not in processes_by_uuid: processes_by_uuid[uuid] = []
-            processes_by_uuid[uuid].append(p_info)
-            all_pids.add(p_info['pid'])
-
-        pid_to_user = {}
-        if all_pids:
-            pids_str = ",".join(all_pids)
-            try:
-                cmd_ps = f"ps -o pid=,user= -p {pids_str}"
-                stdin, stdout, stderr = client.exec_command(cmd_ps, timeout=10)
-                ps_out = stdout.read().decode('utf-8').strip()
-                for line in ps_out.splitlines():
-                    parts = line.strip().split()
-                    if len(parts) >= 2:
-                        pid_to_user[parts[0]] = parts[1]
-            except Exception:
-                pass
-
-        final_gpu_list = []
-        for gpu in gpus:
-            # 逐字段独立解析:nvidia-smi 允许输出 N/A(部分机型/驱动的功耗等字段),
-            # 某一字段解析失败不能连坐其它有效字段,也不能归零伪装成正常读数;
-            # 失败字段传 None,网页端与菜单栏显示为 "-"
-            mem_used = _parse_smi_int(gpu['memory.used'])
-            mem_total = _parse_smi_int(gpu['memory.total'])
-            temp = _parse_smi_int(gpu['temperature.gpu'])
-            util = _parse_smi_int(gpu['utilization.gpu'])
-            power_draw = _parse_smi_int(gpu['power.draw'])
-            power_limit = _parse_smi_int(gpu['power.limit'])
-
-            procs = processes_by_uuid.get(gpu['uuid'], [])
-            proc_strs = []
-            for p in procs:
-                pid = p['pid']
-                user = pid_to_user.get(pid, 'unknown')
-                try:
-                    mem = int(float(p['used_gpu_memory']))
-                except ValueError:
-                    mem = 0
-                name = p['process_name'].replace(' ', '')
-                proc_strs.append(f"{user}({name},{mem}M)")
-
-            final_gpu_list.append({
-                "index": str(int(gpu['index'])),
-                "name": gpu['name'],
-                "temperature.gpu": temp,
-                "utilization.gpu": util,
-                "memory.used": mem_used,
-                "memory.total": mem_total,
-                "memory": round((mem_used / mem_total) * 100) if mem_total and mem_used is not None else 0,
-                "power.draw": power_draw,
-                "enforced.power.limit": power_limit,
-                "user_processes": " ".join(proc_strs),
-                "users": len(proc_strs)
-            })
-
+        NODE_BACKOFF.success(source)
         return {"hostname": hostname, "alias": alias, "gpus": final_gpu_list}
 
     except Exception as e:
         with SSH_LOCK:
-            SSH_CLIENTS.pop(hostname, None)
+            failed_client = SSH_CLIENTS.pop(hostname, None)
+        if failed_client is not None:
+            try:
+                failed_client.close()
+            except Exception:
+                logger.debug('Failed to close an unsuccessful SSH connection', exc_info=True)
+        delay = NODE_BACKOFF.failure(source, str(e) or type(e).__name__)
+        logger.warning('Node collection failed; retry in %ss: %s', delay, str(e))
         return {"hostname": hostname, "alias": alias, "error": str(e), "gpus": []}
 
 
@@ -562,8 +481,8 @@ def format_panel_stats():
         gpu_total = sum(len(s.get("gpus", [])) for s in online)
         utils = [g["utilization.gpu"] for s in online for g in s.get("gpus", [])
                  if g["utilization.gpu"] is not None]
-        avg = round(sum(utils) / len(utils)) if utils else 0
-        return f"{len(online)}/{len(stats)} 台在线 · {gpu_total} GPU · 平均 {avg}%"
+        avg = f"{round(sum(utils) / len(utils))}%" if utils else "-"
+        return f"{len(online)}/{len(stats)} 台在线 · {gpu_total} GPU · 平均 {avg}"
     with SERVERS_LOCK:
         has_servers = bool(SERVERS)
     return "采集中…" if has_servers else "尚无节点，请打开面板添加"
@@ -598,7 +517,7 @@ if rumps is not None:
             bottom = "--"
         else:
             gpus = stats_entry["gpus"]
-            free = sum(1 for g in gpus if g.get("users", 0) == 0)
+            free = sum(1 for g in gpus if is_gpu_free(g))
             bottom = f"{free}/{len(gpus)}"
         img = NSImage.alloc().initWithSize_((BLOCK_W * SCALE, BAR_H * SCALE))
         img.lockFocus()
@@ -634,6 +553,10 @@ if rumps is not None:
 
     def _fmt_users(gpu):
         """从 user_processes('user(proc,1024M) ...')提取使用者名,无人占用显示 空闲。"""
+        if gpu.get("error"):
+            return "不可用"
+        if gpu.get("process_error") or gpu.get("users") is None:
+            return "占用未知"
         procs = gpu.get("user_processes") or ""
         names = [p.split("(", 1)[0] for p in procs.split() if p]
         return ", ".join(names) if names else "空闲"
@@ -699,6 +622,9 @@ if rumps is not None:
                 _add_info(f"⚠ {entry.get('error') or '无 GPU 数据'}")
             else:
                 for g in entry["gpus"]:
+                    if g.get("error"):
+                        _add_info(f"GPU{g['index']} · ⚠ 不可用 · {g['error']}")
+                        continue
                     util = g.get("utilization.gpu")
                     util_txt = "-" if util is None else f"{util}%"
                     _add_info(
@@ -765,8 +691,8 @@ if rumps is not None:
                     gpus = s.get("gpus", [])
                     if gpus:
                         utils = [g["utilization.gpu"] for g in gpus if g["utilization.gpu"] is not None]
-                        avg_util = round(sum(utils) / len(utils)) if utils else 0
-                        self.menu.add(f"{tag} · {name} · {len(gpus)} GPU · {avg_util}%")
+                        avg_util = f"{round(sum(utils) / len(utils))}%" if utils else "-"
+                        self.menu.add(f"{tag} · {name} · {len(gpus)} GPU · {avg_util}")
                     else:
                         self.menu.add(f"{tag} · {name} · 无 GPU 数据")
             self.menu.add(rumps.separator)
